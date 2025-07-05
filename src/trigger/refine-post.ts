@@ -2,7 +2,7 @@ import { createGoogleGenerativeAI } from "@ai-sdk/google";
 import { logger, schemaTask, AbortTaskRunError } from "@trigger.dev/sdk/v3";
 import { Output, generateObject, generateText, tool } from "ai";
 import z from "zod";
-import { getCategories } from "../category-service";
+import { Category } from "../db";
 
 const skipAi = false;
 
@@ -15,13 +15,14 @@ const postSchema = z.object({
   content: z.string(),
 });
 
-export const getCategoriesTool = tool({
+export const getAvailableCategoriesTool = tool({
   description: "Get the available categories for a post",
   parameters: z.object({}),
   // location below is inferred to be a string:
   execute: async () => {
-    const categories = await getCategories();
-    return categories;
+    const categories = await fetch("http://localhost:3000/api/categories");
+    const res = await categories.json();
+    return res as Category[];
   },
 });
 
@@ -52,10 +53,12 @@ export const determinateCategoryTask = schemaTask({
   run: async (payload) => {
     if (skipAi) return "default";
     logger.info("new deploy");
-    const { experimental_output } = await generateText({
+    const { experimental_output, toolCalls } = await generateText({
       model: modal("gemini-2.0-flash"),
-      prompt: `Determine the category of this post
-     content : ${payload.content}
+      system:
+        "using the getAvailableCategoriesTool to get tha available categories and pick one for the given post this post",
+      prompt: ` 
+    content : ${payload.content}
      title : ${payload.title}
      `,
       experimental_output: Output.object({
@@ -63,9 +66,10 @@ export const determinateCategoryTask = schemaTask({
           category: z.string(),
         }),
       }),
-      tools: { getCategoriesTool },
+      tools: { getAvailableCategoriesTool },
     });
 
+    logger.info(`ai tool info : ${toolCalls}`);
     logger.info(`category : ${experimental_output.category}`);
 
     return experimental_output.category;
@@ -115,6 +119,7 @@ export const refinePostTask = schemaTask({
     if (!tdlr.ok) {
       throw new AbortTaskRunError(`task failed: ${tdlr.taskIdentifier}`);
     }
+
     // update post
     const data = {
       ...payload,
